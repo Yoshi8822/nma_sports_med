@@ -1,0 +1,350 @@
+---
+title: "nma_sports_med"
+author: "Yoshi Nagatani"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+```{r, eval=TRUE}
+##### ----- Bayesian Network Meta-analysis: Mean Velocity (MV) ----- #####
+
+###--------------------###
+### Required libraries ###
+###--------------------###
+library(gemtc)
+library(rjags)
+library(dmetar)
+library(igraph)
+library(dplyr)
+library(ggplot2)      
+library(metafor)
+library(readxl)
+library(ggprism)    
+library(ggpubr)
+
+set.seed(12345)  
+
+###--------------------------------------------------###
+### Adjust standard error (SE) for multi-arm studies ###
+###--------------------------------------------------###
+adjust_multiarm_se <- function(df, r = 0.5) {
+  df %>%
+    group_by(study) %>%
+    mutate(
+      std.err = if_else(
+        is.na(diff) & n() > 2,
+        {
+          rel_ses <- std.err[!is.na(diff)]
+          if (length(rel_ses) >= 2) {
+            combs <- combn(rel_ses, 2)
+            mean_cov <- mean(r * combs[1, ] * combs[2, ])
+            sqrt(mean_cov)
+          } else {
+            min(std.err[!is.na(diff)], na.rm = TRUE) * 0.999
+          }
+        },
+        std.err
+      )
+    ) %>%
+    ungroup()
+}
+
+
+###------------------------###
+### Mean Velocity Analysis ###
+###------------------------###
+
+# Load data
+df_mv <- read_excel("SMD_SE_MV_positive.xlsx")
+df_trt <- read_excel("Treatment.xlsx")
+
+# Adjust SEs for multi-arm trials
+df_mv <- adjust_multiarm_se(df_mv)
+
+# Build network
+network_mv <- mtc.network(data.re = df_mv, treatments = df_trt)
+summary(network_mv)
+
+# Network plot
+plot(network_mv,
+     use.description = TRUE,            
+     vertex.color = "white",            
+     vertex.label.color = "gray10",   
+     vertex.shape = "sphere",           
+     vertex.label.family = "Helvetica", 
+     vertex.size = 20,                  
+     vertex.label.dist = 2,             
+     vertex.label.cex = 2,        
+     layout = layout.fruchterman.reingold)
+title("Mean Velocity")
+
+# Random-effects network meta-analysis model
+model_mv <- mtc.model(network_mv,
+                      likelihood = "normal",
+                      link = "identity",
+                      linearModel = "random",
+                      n.chain = 4)
+
+# MCMC sampling
+mcmc_mv_short <- mtc.run(model_mv, n.adapt = 50, n.iter = 1000, thin = 10)
+mcmc_mv       <- mtc.run(model_mv, n.adapt = 5000, n.iter = 1e5, thin = 10)
+
+gelman.diag(mcmc_mv_short)$mpsrf
+gelman.diag(mcmc_mv)$mpsrf
+summary(mcmc_mv)
+
+
+###------------------------------###
+### Assessing global consistency ###
+###------------------------------###
+
+# Fit the inconsistency model - allowing unrelated mean effects (uncorrelated)
+model_mv_incon <- mtc.model(network_mv,
+                            likelihood = "normal",
+                            link = "identity",
+                            linearModel = "random",
+                            n.chain = 4,
+                            type = "use")
+
+mcmc_mv_incon <- mtc.run(model_mv_incon,
+                         n.adapt = 5000, n.iter = 1e5, thin = 10)
+
+# Summaries
+summary_consistent <- summary(mcmc_mv)
+summary_inconsistent <- summary(mcmc_mv_incon)
+summary_consistent
+summary_inconsistent
+
+
+
+###-----------------------------###
+### Assessing local consistency ###
+###-----------------------------###
+
+nodesplit_mv <- mtc.nodesplit(network_mv,
+                              linearModel = "random",
+                              likelihood = "normal",
+                              link = "identity",
+                              n.adapt = 5000,
+                              n.iter = 1e5,
+                              thin = 10)
+summary(nodesplit_mv)
+plot(summary(nodesplit_mv))
+
+
+###----------------------------------###
+### Ranking treatment effects for MV ###
+###----------------------------------###
+
+rank_mv <- rank.probability(mcmc_mv)
+sucra_mv <- dmetar::sucra(rank_mv, lower.is.better = TRUE)
+
+sucra_df_mv <- data.frame(
+  Treatment = c("CS", "intraRR", "interRR", "TS"),
+  SUCRA = sucra_mv$SUCRA * 100
+)
+
+MV_SUCRA <- ggplot(sucra_df_mv,
+                   aes(x = reorder(Treatment, SUCRA), y = SUCRA)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = sprintf("%.1f%%", SUCRA)),
+            hjust = -0.2, size = 6) +
+  coord_flip() +
+  labs(title = "SUCRA for Mean Velocity",
+       x = "Treatment", y = "SUCRA (%)") +
+  theme_prism() +
+  ylim(0, max(sucra_df_mv$SUCRA) * 1.1)
+
+MV_SUCRA
+
+results_mv <- relative.effect.table(mcmc_mv)
+results_mv
+
+
+
+
+
+
+
+##### ----- Bayesian Network Meta-analysis: Peak Velocity (PV) ----- #####
+
+df_pv <- read_excel("SMD_SE_PV_positive.xlsx")
+
+network_pv <- mtc.network(data.re = df_pv, treatments = df_trt)
+summary(network_pv)
+
+plot(network_pv,
+     use.description = TRUE,
+     vertex.color = "white",
+     vertex.label.color = "gray10",
+     vertex.shape = "sphere",
+     vertex.size = 20,
+     vertex.label.cex = 2,
+     layout = layout.fruchterman.reingold)
+title("Peak Velocity")
+
+model_pv <- mtc.model(network_pv,
+                   likelihood = "normal",
+                   link = "identity",
+                   linearModel = "random",
+                   n.chain = 4)
+
+mcmc_pv_short <- mtc.run(model_pv, n.adapt = 50, n.iter = 1000, thin = 10)
+mcmc_pv <- mtc.run(model_pv, n.adapt = 5000, n.iter = 1e5, thin = 10)
+
+gelman.diag(mcmc_pv_short)$mpsrf
+gelman.diag(mcmc_pv)$mpsrf
+
+summary(mcmc_pv)
+
+###------------------------------###
+### Assessing global consistency ###
+###------------------------------###
+
+# Fit the inconsistency model - allowing unrelated mean effects (uncorrelated)
+model_inconsistent_pv <- mtc.model(network_pv,
+                                likelihood = "normal",
+                                link = "identity",
+                                linearModel = "random",
+                                n.chain = 4,
+                                type = "use")  # this relaxes consistency assumption
+
+mcmc_inconsistent_pv <- mtc.run(model_inconsistent_pv, n.adapt = 5000, n.iter = 1e5, thin = 10)
+
+# Summaries
+summary_consistent_pv <- summary(mcmc_pv)
+summary_inconsistent_pv <- summary(mcmc_inconsistent_pv)
+summary_consistent_pv
+summary_inconsistent_pv
+
+
+
+
+###-----------------------------###
+### Assessing local consistency ###
+###-----------------------------###
+
+nodesplit_pv <- mtc.nodesplit(network_pv, 
+                           linearModel = "random", 
+                           likelihood = "normal",
+                           link = "identity",
+                           n.adapt = 5000, 
+                           n.iter = 1e5, 
+                           thin = 10)
+
+summary(nodesplit_pv)
+plot(summary(nodesplit_pv)) 
+
+
+###----------------------------------###
+### Ranking treatment effects for PV ###
+###----------------------------------###
+rank_pv <- rank.probability(mcmc_pv)
+sucra_pv <- dmetar::sucra(rank_pv, lower.is.better = TRUE)
+
+sucra_df_pv <- data.frame(
+  Treatment = c("CS", "intraRR", "interRR", "TS"),
+  SUCRA = sucra_pv$SUCRA * 100
+)
+
+PV_SUCRA <- ggplot(sucra_df_pv, aes(x = reorder(Treatment, SUCRA), y = SUCRA)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = paste0(sprintf("%.1f", SUCRA), "%")),  # add %
+            hjust = -0.2,                                      # position label
+            size = 6,
+            color = "black") +
+  coord_flip() +
+  labs(
+    title = "SUCRA for Peak Velocity",
+    x = "",
+    y = "SUCRA (%)"
+  ) +
+  theme_prism() +
+  ylim(0, max(sucra_df_pv$SUCRA) * 1.1)  # extra space for labels
+
+
+#  Combine SUCRA ranking for MV and PV 
+ggarrange(MV_SUCRA, PV_SUCRA, 
+          labels = c("A", "B"),
+          nrow = 1)
+
+results_pv <- relative.effect.table(mcmc_pv)
+results_pv
+
+
+
+##### ----- Meta-regression for exercise type ----- #####
+
+df_mr_ex <- read_excel("SMD_SE_meta-regression_exercise.xlsx")
+df_ex <- read_excel("Exercise_MV.xlsx")
+
+df_mr_ex <- adjust_multiarm_se(df_mr_ex)
+
+
+network_mr_ex <- mtc.network(data.re = df_mr_ex,
+                             studies = df_ex,
+                             treatments = df_trt)
+
+regressor_ex <- list(coefficient = "shared",
+                     variable = "exercise",
+                     control = "TS")
+
+model_mr_ex <- mtc.model(network_mr_ex,
+                         likelihood = "normal",
+                         link = "identity",
+                         type = "regression",
+                         regressor = regressor_ex)
+
+
+mcmc_mr_ex <- mtc.run(model_mr_ex,
+                      n.adapt = 5000, n.iter = 1e5, thin = 10)
+
+summary(mcmc_mr_ex)
+
+# Upper-body Exercise
+gemtc::forest(relative.effect(mcmc_mr_ex, t1 = "TS", covariate = 0),
+              use.description = TRUE, xlim = c(-0.5, 1.))
+
+# Lower-body Exercise
+gemtc::forest(relative.effect(mcmc_mr_ex, t1 = "TS", covariate = 1),
+              use.description = TRUE, xlim = c(-0.5, 1.))
+
+
+
+
+
+
+##### ----- Meta-regression for exercise intensity ----- #####
+
+df_mr_int <- read_excel("SMD_SE_meta-regression_intensity.xlsx")
+df_int <- read_excel("Intensity_MV.xlsx")
+
+df_mr_int <- adjust_multiarm_se(df_mr_int)
+
+network_mr_int <- mtc.network(data.re = df_mr_int,
+                              studies = df_int,
+                              treatments = df_trt)
+
+regressor_int <- list(coefficient = "shared",
+                      variable = "exercise",
+                      control = "TS")
+
+model_mr_int <- mtc.model(network_mr_int,
+                          likelihood = "normal",
+                          link = "identity",
+                          type = "regression",
+                          regressor = regressor_int)
+
+mcmc_mr_int <- mtc.run(model_mr_int,
+                       n.adapt = 5000, n.iter = 1e5, thin = 10)
+
+summary(mcmc_mr_int)
+
+# Moderate-intensity
+gemtc::forest(relative.effect(mcmc_mr_int, t1 = "TS", covariate = 0),
+              use.description = TRUE, xlim = c(-0.5, 1.))
+
+# High-intensity
+gemtc::forest(relative.effect(mcmc_mr_int, t1 = "TS", covariate = 1),
+              use.description = TRUE, xlim = c(-0.5, 1.))
+```
